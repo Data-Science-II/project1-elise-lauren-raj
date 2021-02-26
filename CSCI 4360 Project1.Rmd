@@ -1,0 +1,89 @@
+---
+title: "Project 1"
+author: "Raj Patel"
+date: "2/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+Concrete_Data <- read_excel("Concrete_Data.xls")
+X1 = (Concrete_Data$`Cement (component 1)(kg in a m^3 mixture)`)
+X2 = (Concrete_Data$`Blast Furnace Slag (component 2)(kg in a m^3 mixture)`)
+X3 = (Concrete_Data$`Fly Ash (component 3)(kg in a m^3 mixture)`)
+X4 = (Concrete_Data$`Water  (component 4)(kg in a m^3 mixture)`)
+X5 = (Concrete_Data$`Superplasticizer (component 5)(kg in a m^3 mixture)`)
+X6 = (Concrete_Data$`Coarse Aggregate  (component 6)(kg in a m^3 mixture)`)
+X7 = (Concrete_Data$`Fine Aggregate (component 7)(kg in a m^3 mixture)`)
+X8 = (Concrete_Data$`Age (day)`)
+Y = (Concrete_Data$`Concrete compressive strength(MPa, megapascals)`)
+
+data1 = Concrete_Data
+
+```
+
+
+## Linear Regression Model
+```{r}
+linfit <- lm(Y~X1+X2+X3+X4+X5+X6+X7+X8)
+summary(linfit)
+anova(linfit)
+coefficients(linfit)
+confint(linfit,level = .95)
+vcov(linfit)
+```
+
+## Quadraatic Model
+```{r}
+quadfit = lm(Y ~ X1 + I(X1^2))
+# + X2 + I(X2^2)+ X3 + I(X3^2)+ X4 + I(X4^2)+ X5 + I(X5^2)+ X6 + I(X6^2)+ X7 + I(X7^2)+ X8 + I(X^2))
+summary(quadfit)
+anova(quadfit)
+coefficients(quadfit)
+confint(quadfit,level = .95)
+vcov(quadfit)
+```
+
+## Cubic Model
+```{r}
+cubfit = lm(Y ~ X1 + I(X1^2) + I(X1^3))
+summary(cubfit)
+anova(cubfit)
+coefficients(cubfit)
+confint(cubfit,level = .95)
+vcov(cubfit) 
+```
+
+## Stepwise regression
+```{r}
+fullModelFit = lm(Y~X1+X2+X3+X4+X5+X6+X7+X8, data=data1 )    
+emptyModelFit = lm(Y~1, data=data1 )    
+step(fullModelFit, method="backward") # backward elimination
+# start with the full model. By default it tries to minimize the AIC.
+# go through output step by step
+```
+
+```{r}
+fullModelFit = lm(Y~X1+X2+X3+X4+X5+X6+X7+X8, data=data1 )    
+emptyModelFit = lm(Y~1, data=data1 )    
+step(emptyModelFit, scope=list(upper=fullModelFit),
+     direction="forward") # forward selection
+# need to specify the initial model and full model. By default it tries to minimize the AIC.
+# go through output step by step
+```
+
+```{r}
+fullModelFit = lm(Y~X1+X2+X3+X4+X5+X6+X7+X8, data=data1 )    
+emptyModelFit = lm(Y~1, data=data1 )    
+step(emptyModelFit, scope=list(upper=fullModelFit),
+     direction="both") # both
+# need to specify the initial model and full model. By default it tries to minimize the AIC.
+# go through output step by step
+```
+
+```{r}
+install.packages(glmnet)
+library(glmnet)
+```
+

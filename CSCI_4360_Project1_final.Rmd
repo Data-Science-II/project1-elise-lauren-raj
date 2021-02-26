@@ -1,0 +1,1549 @@
+---
+title: "CSCI_4360_Project1_Final"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Project 1 - R Code
+###Elise Karinshak, Raj Patel, Lauren Wilkes
+
+Note: this code takes a very long time to run due to the computational demands of forward/backwards/stepwise evaluation of alternatives (especially for datasets with more features, such as CubicXR (as opposed to multiple linear)).
+
+###Implementations of methods for analysis
+
+Forward Implementation
+```{r}
+library("caret")
+library("olsrr")
+
+#FORWARD SELECTION
+
+#forward selection and generating appropriate plots
+forward_select <- function(dataset, response_ind) {
+ 
+  #split the data into explanatory and response
+  data_x <- dataset[-response_ind]
+  data_y <- as.numeric(unlist(dataset[response_ind]))
+  response <- colnames(dataset)[response_ind] #converts int to str name of col
+ 
+  #part 1: determine and extract values from optimal model
+  #forward selection model
+  form <- paste(response, "~ .")
+
+  model_f <- lm(form, data = dataset)
+  step_f <- ols_step_forward_p(model_f) #optimal model
+  features <- step_f$predictors #features in optimal model
+  
+  #formatting of features output from step
+  new_ls <- c()
+  for (i in features) {
+    new_str <- deparse(substitute(i))
+    new_str <- gsub(c("`"), "", new_str)
+    new_str <- gsub(c("\""), "", new_str)
+    new_ls <- c(new_ls, new_str)
+  }
+  features <- new_ls
+ 
+  #extract metrics of interest up to optimal model
+  rsq <- step_f$rsquare
+  adjrsq <- step_f$adjr
+  aic <- step_f$aic
+  rsq_cv <- c() #determined in next step
+ 
+  #computing r^2 cv
+  #add variables to model, refit model, and recompute r2
+  formula <- paste(response, "~ ")
+  for (i in 1:length(features)) {
+    #update model formula to include next feature
+    if (i == 1) {
+      formula <- paste(formula, features[i])
+    } else {
+      formula <- paste(formula, "+ ", features[i])
+    }
+   
+    #fit model with updated formula
+    model <- lm(formula, data = dataset)
+    #calculate and conatenate r2cv
+    #cross validated model
+    #filter data_x to only include variables of interest
+    data_xi <- data_x[,1:i, drop = FALSE]
+    cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                   trControl = trainControl(method = "cv", number = 10))
+    rsq_cv <- c(rsq_cv, cv_mod$results$Rsquared)
+  }
+ 
+  #part 2: values past optimal number of features
+  all_features <- colnames(dataset)[-response_ind]
+  remaining_features <- all_features[!all_features %in% features]
+  
+  #loop through remaining features
+  #calculating metrics for models past the optimal model
+  for (i in 1:length(remaining_features)) {
+    #update model formula to include next feature
+    formula <- paste(formula, "+ ", remaining_features[i])
+   
+    #fit model with updated formula
+    model <- lm(formula, data = dataset)
+    #calculate metrics
+    rsq <- c(rsq, summary(model)$r.squared) #rsquared metric
+    adjrsq <- c(adjrsq, summary(model)$adj.r.squared) #adj rsquared metric
+    aic <- c(aic, AIC(model)) #aic metric
+    #computing r^2 cv
+    data_xi <- data_x[,length(features):i, drop = FALSE]
+    cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                   trControl = trainControl(method = "cv", number = 10))
+    rsq_cv <- c(rsq_cv, cv_mod$results$Rsquared)
+  }
+ 
+  #create dataframe with metrics
+  x <- seq(1,length(all_features),1) #refers to corresponding number of features
+  metrics_f <- data.frame(cbind(x, rsq, adjrsq, aic, rsq_cv))
+ 
+  return(metrics_f)
+}
+```
+
+Backward Implementation
+```{r}
+#BACKWARD
+
+#backward selection and generating appropriate plots
+backward_elim <- function(dataset, response_ind) {
+  
+  #split data into explanatory and response
+  data_x <- dataset[-response_ind]
+  data_y <- as.numeric(unlist(dataset[response_ind]))
+  response <- colnames(dataset)[response_ind] #converts int to str name of col
+  
+  #Part 1: Achieving Optimal model and extracting metrics
+  #backward selection model
+  form <- paste(response, "~ .")
+  model_b <- lm(form, data = dataset) #fit full model
+  step_b <- ols_step_backward_p(model_b) #optimal model based on backward selection
+  removed <- step_b$removed #extract features removed to obtain optimal model
+
+  features <- c() #initialize features
+  all_features <- c()
+  if (length(removed) != 0) {
+    #formatting of features output from step
+    new_ls <- c()
+    for (i in removed) {
+      new_str <- deparse(substitute(i))
+      new_str <- gsub(c("`"), "", new_str)
+      new_str <- gsub(c("\""), "", new_str)
+      new_ls <- c(new_ls, new_str)
+    }
+    removed <- new_ls
+    
+    #store names of all features
+    all_features <- colnames(dataset)[-response_ind]
+    #remove the removed features -> list of remaining features col names
+    features <- all_features[!all_features %in% removed]
+    #correct order of all features
+    all_features <- c(features, removed)
+  } else {
+    #in the case that no features are removed
+    all_features <- colnames(dataset)[-response_ind]
+    features <- all_features
+  }
+  
+  #initialize lists of metrics
+  rsq <- c()
+  adjrsq <- c()
+  aic <- c()
+  rsq_cv <- c()
+  
+  #generate model formula with all predictors in optimal model
+  optimal_form <- paste(response, "~ ")
+  for (i in 1:(length(features))) {
+    #update model formula to include next feature
+    if (i == 1) {
+      optimal_form <- paste(optimal_form, features[i])
+    } else {
+      optimal_form <- paste(optimal_form, "+ ", features[i])
+    }
+  }
+  
+  #metrics / info for models past the optimal model
+  #generate models, calculate metrics, regenerate with fewer features
+  if (length(removed) != 0) {
+    for (i in 1:length(removed)) {
+      formula <- optimal_form
+      for (j in 1:(length(removed) + 1 - i)) {
+        #update model formula to include next feature
+        formula <- paste(formula, "+ ", removed[j])
+      }
+      #fit model
+      model_b <- lm(formula, data = dataset)
+      
+      #extract metrics of interest
+      rsq <- c(rsq, summary(model_b)$r.squared)
+      adjrsq <- c(adjrsq, summary(model_b)$adj.r.squared)
+      aic <- c(aic, AIC(model_b))
+      
+      #filter data_x to only include variables of interest
+      data_xi <- data_x[,1:j, drop = FALSE]
+      cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                     trControl = trainControl(method = "cv", number = 10))
+      rsq_cv <- c(cv_mod$results$Rsquared, rsq_cv)
+    }
+  }
+
+  #Part 2: removing features beyond optimal model
+  rem <- ols_step_forward_p(model_b)$features
+  
+  #formatting of features extracted from optimal model
+  new_ls <- c()
+  for (i in rem) {
+    new_str <- deparse(substitute(i))
+    new_str <- gsub(c("`"), "", new_str)
+    new_str <- gsub(c("\""), "", new_str)
+    new_ls <- c(new_ls, new_str)
+  }
+  rem <- new_ls
+  remaining <- all_features[!all_features %in% removed]
+  remaining <- cbind(rem, remaining[!remaining %in% rem])
+  
+  #metrics / info for models past the optimal model
+  #generate models, calculate metrics, regenerate with fewer features
+  for (i in 1:length(remaining)) {
+    formula <- paste(response, "~ ")
+    for (j in 1:(length(remaining) + 1 - i)) {
+      #update model formula to include next feature
+      formula <- paste(formula, "+ ", remaining[j])
+    }
+    #fit model
+    model_b <- lm(formula, data = dataset)
+    #extract metrics of interest
+    rsq <- c(rsq, summary(model_b)$r.squared)
+    adjrsq <- c(adjrsq, summary(model_b)$adj.r.squared)
+    aic <- c(aic, AIC(model_b))
+    
+    #filter data_x to only include variables of interest
+    data_xi <- data_x[,1:j, drop = FALSE]
+    cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                   trControl = trainControl(method = "cv", number = 10))
+    rsq_cv <- c(rsq_cv, cv_mod$results$Rsquared)
+  }
+  
+  x <- seq(length(all_features),1,-1)
+  metrics_b <- data.frame(cbind(x, rsq, adjrsq, aic, rsq_cv))
+  
+  return(metrics_b)
+}
+
+backward_elim_b <- function(dataset, response_ind) {
+  
+  data_x <- dataset[-response_ind]
+  data_y <- as.numeric(unlist(dataset[response_ind]))
+  response <- colnames(dataset)[response_ind] #converts int to str name of col
+  
+  #Part 1: Achieving Optimal model
+  #backward selection model
+  form <- paste(response, "~ .")
+ 
+  model_b <- lm(form, data = dataset)
+  step_b <- ols_step_backward_p(model_b) #optimal model
+  removed <- step_b$removed #features in optimal model
+
+  features <- c() #initialize features
+  all_features <- c()
+
+  #formatting of features output from step
+  new_ls <- c()
+  for (i in removed) {
+    new_str <- deparse(substitute(i))
+    new_str <- gsub(c("`"), "", new_str)
+    new_str <- gsub(c("\""), "", new_str)
+    new_ls <- c(new_ls, new_str)
+  }
+  removed <- new_ls
+    
+  all_features <- colnames(dataset)[-response_ind]
+  features <- all_features[!all_features %in% removed]
+  #correct order of all features
+  all_features <- c(features, removed)
+  
+  #initialize lists of metrics
+  rsq <- c()
+  adjrsq <- c()
+  aic <- c()
+  rsq_cv <- c()
+  
+  #generate model formula with all predictors in optimal model
+  optimal_form <- paste(response, "~ ")
+  for (i in 1:(length(features))) {
+    #update model formula to include next feature
+    if (i == 1) {
+      optimal_form <- paste(optimal_form, features[i])
+    } else {
+      optimal_form <- paste(optimal_form, "+ ", features[i])
+    }
+  }
+  
+  #metrics / info for models past the optimal model
+  #generate models, calculate metrics, regenerate with fewer features
+
+  for (i in 1:length(removed)) {
+    formula <- optimal_form
+    for (j in 1:(length(removed) + 1 - i)) {
+      #update model formula to include next feature
+      formula <- paste(formula, "+ ", removed[j])
+    }
+    #fit model
+    model_b <- lm(formula, data = dataset)
+    
+    #extract metrics of interest
+    rsq <- c(rsq, summary(model_b)$r.squared)
+    adjrsq <- c(adjrsq, summary(model_b)$adj.r.squared)
+    aic <- c(aic, AIC(model_b))
+    
+    #filter data_x to only include variables of interest
+    data_xi <- data_x[,1:j, drop = FALSE]
+    cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                   trControl = trainControl(method = "cv", number = 10))
+    rsq_cv <- c(cv_mod$results$Rsquared, rsq_cv)
+  }
+
+  #Part 2: removing features after optimal model
+  remaining <- features
+  
+  #metrics / info for models past the optimal model
+  #generate models, calculate metrics, regenerate with fewer features
+  for (i in 1:length(remaining)) {
+    formula <- paste(response, "~ ")
+    for (j in 1:(length(remaining) + 1 - i)) {
+      #update model formula to include next feature
+      formula <- paste(formula, "+ ", remaining[j])
+    }
+    #fit model
+    model_b <- lm(formula, data = dataset)
+    #extract metrics of interest
+    rsq <- c(rsq, summary(model_b)$r.squared)
+    adjrsq <- c(adjrsq, summary(model_b)$adj.r.squared)
+    aic <- c(aic, AIC(model_b))
+    
+    #filter data_x to only include variables of interest
+    data_xi <- data_x[,1:j, drop = FALSE]
+    cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                   trControl = trainControl(method = "cv", number = 10))
+    rsq_cv <- c(rsq_cv, cv_mod$results$Rsquared)
+  }
+  
+  #create dataframe with metrics
+  x <- seq(length(all_features),1,-1)
+  metrics_b <- data.frame(cbind(x, rsq, adjrsq, aic, rsq_cv))
+  
+  return(metrics_b)
+}
+```
+
+Stepwise Implementation
+```{r}
+#STEPWISE
+
+#stepwise selection and generating appropriate plots
+stepwise_select <- function(dataset, response_ind) {
+  
+  data_x <- dataset[-response_ind]
+  data_y <- as.numeric(unlist(dataset[response_ind]))
+  response <- colnames(dataset)[response_ind] #converts int to str name of col
+  
+  #part 1: values from optimal model
+  #forward selection model
+  form <- paste(response, "~ .")
+  model_s <- lm(form, data = dataset)
+  step_s <- ols_step_both_p(model_s)
+
+  #extract metrics of interest up to optimal model
+  rsq <- step_s$rsquare
+  adjrsq <- step_s$adjr
+  aic <- step_s$aic
+  
+  order <- step_s$orders
+  method <- step_s$method
+  ls <- c()
+  rm_metrics <- c()
+  rsq_cv <- c() #determined in next step
+
+  j = 0 # initialize counter    
+  #add variables to model, refit model, and recompute r2
+  for (i in order) {
+    j = j + 1 #index of i in order
+    new_str <- deparse(substitute(i))
+    new_str <- gsub(c("`"), "", new_str)
+    new_str <- gsub(c("\""), "", new_str)
+        
+    if (method[j] == "addition") {
+      #add to list
+      ls <- c(ls, new_str)
+        
+      #generate formula
+      formula <- make_formula(response, ls)
+        
+      #fit model with updated formula
+      model <- lm(formula, data = dataset)
+      #calculate and conatenate r2cv
+      
+      all_features <- colnames(dataset)[-response_ind]
+        
+      #filter data_x to only include variables of interest
+      data_xi <- data_x[,match(ls, all_features), drop = FALSE]
+      cv_mod = train(x = data_xi, y = data_y, method = "lm",
+                       trControl = trainControl(method = "cv", number = 10))
+      rsq_cv <- c(rsq_cv, cv_mod$results$Rsquared)
+    } else { #SUBTRACTION
+      #remove from list
+      rm_metrics <- c(rm_metrics, j)
+      ls <- ls[-match(new_str, ls)]
+    }
+  }
+  
+
+  if (length(rm_metrics) != 0) {
+    rsq <- rsq[-rm_metrics] #remove r^2 terms for duplicate # params
+    adjrsq <- adjrsq[-rm_metrics]
+    aic <- aic[-rm_metrics]
+  }
+  x <- seq(1,length(rsq),1)  
+ 
+  metrics_s <- data.frame(cbind(x, rsq, adjrsq, aic, rsq_cv))
+  
+  return(metrics_s)
+}
+```
+
+Ridge and Lasso Linear Implementations
+```{r}
+library(glmnet)
+
+lasso <- function(full_formula, dataset, response_int) {
+  response <- dataset[response_int]
+  
+  #fit lasso model
+  train_matrix <- model.matrix(as.formula(full_formula), data = dataset) #glmnet requires matrix, not data frame
+  model_lasso <- glmnet(train_matrix, unlist(response), alpha = 1) #set alpha = 1 for lasso regression
+  
+  #Lasso: optimal value for lambda
+  cv_lasso_model <- cv.glmnet(train_matrix, unlist(response), alpha = 1) #automatically performs cross validation with k=10
+  optimal_lasso_lambda <- cv_lasso_model$lambda.min #lambda value minimizing MSE
+  plot(cv_lasso_model) #visualization of optimal lambda value
+  
+  #model with optimal lambda values
+  best_lasso_model <- glmnet(train_matrix, unlist(response), alpha = 1, lambda = optimal_lasso_lambda)
+  print(best_lasso_model)
+}
+
+ridge <- function(full_formula, dataset, response_int) {
+  response <- dataset[response_int]
+  
+  #fit lasso model
+  train_matrix <- model.matrix(as.formula(full_formula), data = dataset) #glmnet requires matrix, not data frame
+  model_ridge <- glmnet(train_matrix, unlist(response), alpha = 0) #set alpha = 0 for ridge regression
+  
+  #Lasso: optimal value for lambda
+  cv_ridge_model <- cv.glmnet(train_matrix, unlist(response), alpha = 0) #automatically performs cross validation with k=10
+  optimal_ridge_lambda <- cv_ridge_model$lambda.min #lambda value minimizing MSE
+  plot(cv_ridge_model) #visualization of optimal lambda value
+  
+  #model with optimal lambda values
+  best_ridge_model <- glmnet(train_matrix, unlist(response), alpha = 0, lambda = optimal_ridge_lambda)
+  print(best_ridge_model)
+}
+```
+
+Dataset / Formula Generation Helper Methods
+```{r}
+#Quadratic
+#create columns with quadratic terms
+#dataset - dataset to transform (df)
+#resp_ind - index of response column (int)
+quadratic_data <- function(dataset, resp_ind) {
+  ls <- colnames(dataset)[-resp_ind]
+  response <- colnames(dataset)[resp_ind]
+  
+  quad <- c()
+  names <- c()
+  for(i in 1:(length(ls)-1)) {
+    quad <- cbind(quad, dataset[,ls[i]]^2)
+    names <- c(names, paste("I(", ls[i], "^2)", sep = ""))
+  }
+  colnames(quad) <- names
+  data <- cbind(dataset, quad)
+  return(data)
+}
+
+#Cubic
+#create columns with quadratic and cubic terms
+cubic_data <- function(dataset, resp_ind) {
+  ls <- colnames(dataset)[-resp_ind]
+  response <- colnames(dataset)[resp_ind]
+  
+  quad <- c()
+  cub <- c()
+  quad_names <- c()
+  cub_names <- c()
+  for(i in 1:(length(ls)-1)) {
+    quad <- cbind(quad, dataset[,ls[i]]^2)
+    cub <- cbind(cub, dataset[,ls[i]]^3)
+    quad_names <- c(quad_names, paste("I(", ls[i], "^2)", sep = ""))
+    cub_names <- c(cub_names, paste("I(", ls[i], "^3)", sep = ""))
+  }
+  colnames(quad) <- quad_names
+  colnames(cub) <- cub_names
+  data <- cbind(dataset, quad, cub)
+  return(data)
+}
+
+#Quad XR
+#create columns with quadratic and interaction terms
+quadXR_data <- function(dataset, resp_ind) {
+  ls <- colnames(dataset)[-resp_ind]
+  #k as distance btwn term 1 and term 1^2
+  k <- length(ls)
+  
+  quad_data <- quadratic_data(dataset, resp_ind)
+  inter <- c()
+  
+  ls_q <- colnames(dataset)[-resp_ind]
+  names <- c()
+  
+  for (i in 1:(length(ls_q)-1)) {
+    j = i + 1
+    for (j in j:length(ls_q)){
+      if (j != (i + k)) {
+        inter <- cbind(inter, dataset[,ls_q[i]]*dataset[,ls_q[j]])
+        names <- c(names, paste(ls_q[i], ":", ls_q[j], sep = ""))
+      }
+    }
+  }
+  colnames(inter) <- names
+  
+  data <- cbind(quad_data, inter)
+  return(data)
+}
+
+#Cubic XR
+#create columns with quadratic and cubic interaction terms
+#note this does not produce a full cubic XR model with all interaction terms
+cubicXR_data <- function(dataset, resp_ind) {
+  ls_q <- colnames(quadratic_data(dataset, resp_ind))[-resp_ind]
+  #k as distance btwn term 1 and term 1^2
+  k <- length(ls)
+  dataset <- cubic_data(dataset, resp_ind)
+  inter <- c()
+  names <- c()
+  
+  for (i in 1:(length(ls_q)-1)) {
+    j = i + 1
+    for (j in j:length(ls_q)){
+      if (j != (i + k) && j != (i + 2*k)) {
+        inter <- cbind(inter, dataset[,ls_q[i]]*dataset[,ls_q[j]])
+        names <- c(names, paste(ls_q[i], ":", ls_q[j], sep = ""))
+      }
+    }
+  }
+  colnames(inter) <- names
+  data <- cbind(dataset, inter)
+  return(data)
+}
+
+#format list of names as formula
+make_formula <- function(response, ls) {
+  formula <- paste(response, "~ ")
+  for (i in 1:length(ls)) {
+    if (i != length(ls)) {
+      formula <- paste(formula, ls[i], "+ ")
+    } else {
+      formula <- paste(formula, ls[i])
+    }
+  }
+  return(formula)
+}
+```
+
+Plot Methods
+```{r}
+library(tidyverse) 
+
+#Plotting r^2 metrics
+r2_plot <- function(metrics, type) {
+  ggplot(data = metrics) +
+    geom_line(aes(x=x, y=rsq), color = "red") +
+    geom_line(aes(x=x, y=adjrsq), color = "orange") +
+    geom_line(aes(x=x, y=rsq_cv), color = "blue") + 
+    ggtitle(paste(type, "Selection: R Metrics v # features")) + 
+    ylab("R Metric") +
+    xlab("Number of Features")
+}
+
+#Plotting aic metric
+aic_plot <- function(metrics, type) {
+  ggplot(data = metrics) +
+    geom_line(aes(x=x, y=aic), color = "red") +
+    ggtitle(paste(type, "Selection: AIC v # features")) + 
+    ylab("AIC") +
+    xlab("Number of Features")
+}
+```
+
+
+###Dataset 1: AutoMPG
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/auto-mpg/ 
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Auto+MPG 
+
+Step 1: Data Preprocessing
+```{r}
+auto_mpg <- data.frame(read.csv("~/Desktop/CSCI4360/auto-mpg_data.csv", header = FALSE, na.strings=c("",".","?", "NA"), sep = ""))
+auto_cols <- c("mpg", "cylinders", "displacement", "horsepower", "weight", "acceleration", "model_year", "origin", "car_name")
+colnames(auto_mpg) <- auto_cols
+
+auto_mpg <- auto_mpg[, -9] #car_name is not a useful predictor
+
+#there are missing values in this dataset
+#fill missing values with means
+mean <- mean(auto_mpg$horsepower, na.rm = TRUE)
+auto_mpg$horsepower[is.na(auto_mpg$horsepower)] <- mean
+
+#there are 398 observations recorded
+len <- length(auto_mpg$mpg)
+
+#goal: estimate mpg based on characteristics
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- auto_mpg
+
+#Forward
+auto1_metrics_f <- forward_select(dataset, 1)
+r2_plot(auto1_metrics_f, "Mult Linear Forward")
+aic_plot(auto1_metrics_f, "Mult Linear Forward")
+
+#Backward
+auto1_metrics_b <- backward_elim_b(dataset, 1)
+r2_plot(auto1_metrics_b, "Mult Linear Backward")
+aic_plot(auto1_metrics_b, "Mult Linear Backward")
+
+#Stepwise
+auto1_metrics_s <- stepwise_select(dataset, 1)
+r2_plot(auto1_metrics_s, "Mult Linear Stepwise")
+aic_plot(auto1_metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[1]), colnames(dataset[-1]))
+response <- dataset[1]
+#Ridge
+ridge(full_formula, dataset, 1)
+#Lasso
+lasso(full_formula, dataset, 1)
+```
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(auto_mpg, 1)
+
+#Forward
+auto2_metrics_f <- forward_select(dataset, 1)
+r2_plot(auto2_metrics_f, "Quadratic Forward")
+aic_plot(auto2_metrics_f, "Quadratic Forward")
+
+#Backward
+auto2_metrics_b <- backward_elim_b(dataset, 1)
+r2_plot(auto2_metrics_b, "Quadratic Backward")
+aic_plot(auto2_metrics_b, "Quadratic Backward")
+
+#Stepwise
+auto2_metrics_s <- stepwise_select(dataset, 1)
+r2_plot(auto2_metrics_s, "Quadratic Stepwise")
+aic_plot(auto2_metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[1]), colnames(dataset[-1]))
+response <- dataset[1]
+#Ridge
+ridge(full_formula, dataset, 1)
+#Lasso
+lasso(full_formula, dataset, 1)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(auto_mpg, 1)
+
+#Forward
+auto3_metrics_f <- forward_select(dataset, 1)
+r2_plot(auto3_metrics_f, "QuadXR Forward")
+aic_plot(auto3_metrics_f, "QuadXR Forward")
+
+#Backward
+auto3_metrics_b <- backward_elim_b(dataset, 1)
+r2_plot(auto3_metrics_b, "QuadXR Backward")
+aic_plot(auto3_metrics_b, "QuadXR Backward")
+
+#Stepwise
+auto3_metrics_s <- stepwise_select(dataset, 1)
+r2_plot(auto3_metrics_s, "QuadXR Stepwise")
+aic_plot(auto3_metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[1]), colnames(dataset[-1]))
+response <- dataset[1]
+#Ridge
+ridge(full_formula, dataset, 1)
+#Lasso
+lasso(full_formula, dataset, 1)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(auto_mpg, 1)
+
+#Forward
+auto4_metrics_f <- forward_select(dataset, 1)
+r2_plot(auto4_metrics_f, "Cubic Forward")
+aic_plot(auto4_metrics_f, "Cubic Forward")
+
+#Backward
+auto4_metrics_b <- backward_elim_b(dataset, 1)
+r2_plot(auto4_metrics_b, "Cubic Backward")
+aic_plot(auto4_metrics_b, "Cubic Backward")
+
+#Stepwise
+auto4_metrics_s <- stepwise_select(dataset, 1)
+r2_plot(auto4_metrics_s, "Cubic Stepwise")
+aic_plot(auto4_metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[1]), colnames(dataset[-1]))
+response <- dataset[1]
+#Ridge
+ridge(full_formula, dataset, 1)
+#Lasso
+lasso(full_formula, dataset, 1)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(auto_mpg, 1)[,-c(50:60, 65:70)]
+
+#Forward
+auto5_metrics_f <- forward_select(dataset, 1)
+r2_plot(auto5_metrics_f, "CubicXR Forward")
+aic_plot(auto5_metrics_f, "CubicXR Forward")
+
+#Backward
+auto5_metrics_b <- backward_elim_b(dataset, 1)
+r2_plot(auto5_metrics_b, "CubicXR Backward")
+aic_plot(auto5_metrics_b, "CubicXR Backward")
+
+#Stepwise
+auto5_metrics_s <- stepwise_select(dataset, 1)
+r2_plot(auto5_metrics_s, "CubicXR Stepwise")
+aic_plot(auto5_metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[1]), colnames(dataset[-1]))
+response <- dataset[1]
+#Ridge
+ridge(full_formula, dataset, 1)
+#Lasso
+lasso(full_formula, dataset, 1)
+```
+
+
+###Dataset 2: Concrete
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/slump/ 
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Concrete+Slump+Test 
+
+Step 1: Data Preprocessing
+```{r}
+#install.packages("xlsx")
+library("xlsx")
+
+concrete <- data.frame(read.xlsx("~/Desktop/CSCI4360/Concrete_Data.xls", sheetIndex = 1))
+conc_cols <- c("cement", "blast_furnace_slag", "fly_ash", "water", "superplasticizer", "course_aggregate", "fine_aggregate", "age", "concrete_compressive")
+colnames(concrete) <- conc_cols
+
+#there are not missing values in this dataset
+#there are 1030 observations recorded
+len <- length(concrete$cement)
+
+#goal: estimate concrete_compressive based on characteristics
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- concrete
+
+#Forward
+conc1_metrics_f <- forward_select(dataset, 9)
+r2_plot(conc1_metrics_f, "Mult Linear Forward")
+aic_plot(conc1_metrics_f, "Mult Linear Forward")
+
+#Backward
+conc1_metrics_b <- backward_elim(dataset, 9)
+r2_plot(conc1_metrics_b, "Mult Linear Backward")
+aic_plot(conc1_metrics_b, "Mult Linear Backward")
+
+#Stepwise
+conc1_metrics_s <- stepwise_select(dataset, 9)
+r2_plot(conc1_metrics_s, "Mult Linear Stepwise")
+aic_plot(conc1_metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[9]), colnames(dataset[-9]))
+response <- dataset[9]
+#Ridge
+ridge(full_formula, dataset, 9)
+#Lasso
+lasso(full_formula, dataset, 9)
+```
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(concrete, 9)
+
+#Forward
+conc2_metrics_f <- forward_select(dataset, 9)
+r2_plot(conc2_metrics_f, "Quadratic Forward")
+aic_plot(conc2_metrics_f, "Quadratic Forward")
+
+#Backward
+conc2_metrics_b <- backward_elim_b(dataset, 9)
+r2_plot(conc2_metrics_b, "Quadratic Backward")
+aic_plot(conc2_metrics_b, "Quadratic Backward")
+
+#Stepwise
+conc2_metrics_s <- stepwise_select(dataset, 9)
+r2_plot(conc2_metrics_s, "Quadratic Stepwise")
+aic_plot(conc2_metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[9]), colnames(dataset[-9]))
+response <- dataset[9]
+#Ridge
+ridge(full_formula, dataset, 9)
+#Lasso
+lasso(full_formula, dataset, 9)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(concrete, 9)
+
+#Forward
+conc3_metrics_f <- forward_select(dataset, 9)
+r2_plot(conc3_metrics_f, "QuadXR Forward")
+aic_plot(conc3_metrics_f, "QuadXR Forward")
+
+#Backward
+conc3_metrics_b <- backward_elim_b(dataset, 9)
+r2_plot(conc3_metrics_b, "QuadXR Backward")
+aic_plot(conc3_metrics_b, "QuadXR Backward")
+
+#Stepwise
+conc3_metrics_s <- stepwise_select(dataset, 9)
+r2_plot(conc3_metrics_s, "QuadXR Stepwise")
+aic_plot(conc3_metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[9]), colnames(dataset[-9]))
+response <- dataset[9]
+#Ridge
+ridge(full_formula, dataset, 9)
+#Lasso
+lasso(full_formula, dataset, 9)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(concrete, 9)
+
+#Forward
+conc4_metrics_f <- forward_select(dataset, 9)
+r2_plot(conc4_metrics_f, "Cubic Forward")
+aic_plot(conc4_metrics_f, "Cubic Forward")
+
+#Backward
+conc4_metrics_b <- backward_elim_b(dataset, 9)
+r2_plot(conc4_metrics_b, "Cubic Backward")
+aic_plot(conc4_metrics_b, "Cubic Backward")
+
+#Stepwise
+conc4_metrics_s <- stepwise_select(dataset, 9)
+r2_plot(conc4_metrics_s, "Cubic Stepwise")
+aic_plot(conc4_metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[9]), colnames(dataset[-9]))
+response <- dataset[9]
+#Ridge
+ridge(full_formula, dataset, 9)
+#Lasso
+lasso(full_formula, dataset, 9)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(concrete, 9)[,-c(24:80)] #not full interaction terms
+
+#Forward
+conc5_metrics_f <- forward_select(dataset, 9)
+r2_plot(conc5_metrics_f, "CubicXR Forward")
+aic_plot(conc5_metrics_f, "CubicXR Forward")
+
+#Backward
+conc5_metrics_b <- backward_elim_b(dataset, 9)
+r2_plot(conc5_metrics_b, "CubicXR Backward")
+aic_plot(conc5_metrics_b, "CubicXR Backward")
+
+#Stepwise
+conc5_metrics_s <- stepwise_select(dataset, 9)
+r2_plot(conc5_metrics_s, "CubicXR Stepwise")
+aic_plot(conc5_metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[9]), colnames(dataset[-9]))
+response <- dataset[9]
+#Ridge
+ridge(full_formula, dataset, 9)
+#Lasso
+lasso(full_formula, dataset, 9)
+```
+
+
+
+###Dataset 3: White Wine Quality
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Wine+Quality
+
+Step 1: Data Preprocessing
+```{r}
+wineq_white <- data.frame(read.csv("~/Desktop/CSCI4360/winequality-white.csv", header = TRUE, sep = ";"))
+
+#there are not missing values in this dataset
+#there are 4898 observations recorded
+len <- length(wineq_white$fixed.acidity)
+
+#goal: estimate quality based on characteristics
+#explanatory data
+wine_x <- wineq_white[, -12] 
+#response data
+wine_y <- wineq_white$quality
+
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- wineq_white
+
+#Forward
+wine1_metrics_f <- forward_select(dataset, 12)
+r2_plot(wine1_metrics_f, "Mult Linear Forward")
+aic_plot(wine1_metrics_f, "Mult Linear Forward")
+
+#Backward
+wine1_metrics_b <- backward_elim_b(dataset, 12)
+r2_plot(wine1_metrics_b, "Mult Linear Backward")
+aic_plot(wine1_metrics_b, "Mult Linear Backward")
+
+#Stepwise
+wine1_metrics_s <- stepwise_select(dataset, 12)
+r2_plot(wine1_metrics_s, "Mult Linear Stepwise")
+aic_plot(wine1_metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[12]), colnames(dataset[-12]))
+response <- dataset[12]
+#Ridge
+ridge(full_formula, dataset, 12)
+#Lasso
+lasso(full_formula, dataset, 12)
+```
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(wineq_white, 12)
+
+#Forward
+wine2_metrics_f <- forward_select(dataset, 12)
+r2_plot(wine2_metrics_f, "Quadratic Forward")
+aic_plot(wine2_metrics_f, "Quadratic Forward")
+
+#Backward
+wine2_metrics_b <- backward_elim_b(dataset, 12)
+r2_plot(wine2_metrics_b, "Quadratic Backward")
+aic_plot(wine2_metrics_b, "Quadratic Backward")
+
+#Stepwise
+wine2_metrics_s <- stepwise_select(dataset, 12)
+r2_plot(wine2_metrics_s, "Quadratic Stepwise")
+aic_plot(wine2_metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[12]), colnames(dataset[-12]))
+response <- dataset[12]
+#Ridge
+ridge(full_formula, dataset, 12)
+#Lasso
+lasso(full_formula, dataset, 12)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(wineq_white, 12)
+
+#Forward
+wine3_metrics_f <- forward_select(dataset, 12)
+r2_plot(wine3_metrics_f, "QuadXR Forward")
+aic_plot(wine3_metrics_f, "QuadXR Forward")
+
+#Backward
+wine3_metrics_b <- backward_elim(dataset, 12)
+r2_plot(wine3_metrics_b, "QuadXR Backward")
+aic_plot(wine3_metrics_b, "QuadXR Backward")
+
+#Stepwise
+wine3_metrics_s <- stepwise_select(dataset, 12)
+r2_plot(wine3_metrics_s, "QuadXR Stepwise")
+aic_plot(wine3_metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[12]), colnames(dataset[-12]))
+response <- dataset[12]
+#Ridge
+ridge(full_formula, dataset, 12)
+#Lasso
+lasso(full_formula, dataset, 12)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(wineq_white, 12)[,-c(26)]
+
+#Forward
+wine4_metrics_f <- forward_select(dataset, 12)
+r2_plot(wine4_metrics_f, "Cubic Forward")
+aic_plot(wine4_metrics_f, "Cubic Forward")
+
+#Backward
+wine4_metrics_b <- backward_elim_b(dataset, 12)
+r2_plot(wine4_metrics_b, "Cubic Backward")
+aic_plot(wine4_metrics_b, "Cubic Backward")
+
+#Stepwise
+wine4_metrics_s <- stepwise_select(dataset, 12)
+r2_plot(wine4_metrics_s, "Cubic Stepwise")
+aic_plot(wine4_metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[12]), colnames(dataset[-12]))
+response <- dataset[12]
+#Ridge
+ridge(full_formula, dataset, 12)
+#Lasso
+lasso(full_formula, dataset, 12)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(wineq_white, 12)[,-c(26:60, 65:101)]
+
+#Forward
+wine5_metrics_f <- forward_select(dataset, 12)
+r2_plot(wine5_metrics_f, "CubicXR Forward")
+aic_plot(wine5_metrics_f, "CubicXR Forward")
+
+#Backward
+#wine5_metrics_b <- backward_elim(dataset, 12)
+#r2_plot(wine5_metrics_b, "CubicXR Backward")
+#aic_plot(wine5_metrics_b, "CubicXR Backward")
+
+#Stepwise
+wine5_metrics_s <- stepwise_select(dataset, 12)
+r2_plot(wine5_metrics_s, "CubicXR Stepwise")
+aic_plot(wine5_metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[12]), colnames(dataset[-12]))
+response <- dataset[12]
+#Ridge
+ridge(full_formula, dataset, 12)
+#Lasso
+lasso(full_formula, dataset, 12)
+```
+
+
+###Dataset 4: Parkinsons
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/parkinsons/telemonitoring/ 
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Parkinsons+Telemonitoring
+
+Step 1: Data Preprocessing
+```{r}
+parkinsons <- data.frame(read.csv("~/Desktop/CSCI4360/parkinsons_updrs.csv", header = TRUE))
+
+parkinsons <- parkinsons[-5] #remove additional response variable
+parkinsons <- parkinsons[-c(1,3,4)] #remove non-predictors
+
+#there are no missing values in this dataset
+#there are 5875 observations recorded
+len <- length(parkinsons$motor_UPDRS)
+
+#goal: estimate motor abilities
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- parkinsons
+
+#Forward
+park1_metrics_f <- forward_select(dataset, 2)
+r2_plot(park1_metrics_f, "Mult Linear Forward")
+aic_plot(park1_metrics_f, "Mult Linear Forward")
+
+#Backward
+park1_metrics_b <- backward_elim_b(dataset, 2)
+r2_plot(park1_metrics_b, "Mult Linear Backward")
+aic_plot(park1_metrics_b, "Mult Linear Backward")
+
+#Stepwise
+park1_metrics_s <- stepwise_select(dataset, 2)
+r2_plot(park1_metrics_s, "Mult Linear Stepwise")
+aic_plot(park1_metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[2]), colnames(dataset[-2]))
+response <- dataset[2]
+#Ridge
+ridge(full_formula, dataset, 2)
+#Lasso
+lasso(full_formula, dataset, 2)
+```
+
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(parkinsons, 2)
+
+#Forward
+park2_metrics_f <- forward_select(dataset, 2)
+r2_plot(park2_metrics_f, "Quadratic Forward")
+aic_plot(park2_metrics_f, "Quadratic Forward")
+
+#Backward
+park2_metrics_b <- backward_elim_b(dataset, 2)
+r2_plot(park2_metrics_b, "Quadratic Backward")
+aic_plot(park2_metrics_b, "Quadratic Backward")
+
+#Stepwise
+park2_metrics_s <- stepwise_select(dataset, 2)
+r2_plot(park2_metrics_s, "Quadratic Stepwise")
+aic_plot(park2_metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[2]), colnames(dataset[-2]))
+response <- dataset[2]
+#Ridge
+ridge(full_formula, dataset, 2)
+#Lasso
+lasso(full_formula, dataset, 2)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(parkinsons, 2)[, -c(30:33, 81:84)] 
+#83-85 is problematic
+
+#Forward
+#functional but takes a super long time to run; commented out for convenience
+#park3_metrics_f <- forward_select(dataset, 2)
+#r2_plot(park3_metrics_f, "QuadXR Forward")
+#aic_plot(park3_metrics_f, "QuadXR Forward")
+
+#Backward
+#functional but takes a super long time to run; commented out for convenience
+#park3_metrics_b <- backward_elim(dataset, 2)
+#r2_plot(park3_metrics_b, "QuadXR Backward")
+#aic_plot(park3_metrics_b, "QuadXR Backward")
+
+#Stepwise
+#functional but takes a super long time to run; commented out for convenience
+#park3_metrics_s <- stepwise_select(dataset, 2)
+#r2_plot(park3_metrics_s, "QuadXR Stepwise")
+#aic_plot(park3_metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[2]), colnames(dataset[-2]))
+response <- dataset[2]
+#Ridge
+ridge(full_formula, dataset, 2)
+#Lasso
+lasso(full_formula, dataset, 2)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(parkinsons, 2)
+
+#Forward
+park4_metrics_f <- forward_select(dataset, 2)
+r2_plot(park4_metrics_f, "Cubic Forward")
+aic_plot(park4_metrics_f, "Cubic Forward")
+
+#Backward
+park4_metrics_b <- backward_elim_b(dataset, 2)
+r2_plot(park4_metrics_b, "Cubic Backward")
+aic_plot(park4_metrics_b, "Cubic Backward")
+
+#Stepwise
+park4_metrics_s <- stepwise_select(dataset, 2)
+r2_plot(park4_metrics_s, "Cubic Stepwise")
+aic_plot(park4_metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[2]), colnames(dataset[-2]))
+response <- dataset[2]
+#Ridge
+ridge(full_formula, dataset, 2)
+#Lasso
+lasso(full_formula, dataset, 2)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(parkinsons, 2)[,-c(110:115, 125:135)]
+
+#Forward
+#functional but takes a super long time to run; commented out for convenience
+#park5_metrics_f <- forward_select(dataset, 2)
+#r2_plot(park5_metrics_f, "CubicXR Forward")
+#aic_plot(park5_metrics_f, "CubicXR Forward")
+
+#Backward
+#functional but takes a super long time to run; commented out for convenience
+#park5_metrics_b <- backward_elim_b(dataset, 2)
+#r2_plot(park5_metrics_b, "CubicXR Backward")
+#aic_plot(park5_metrics_b, "CubicXR Backward")
+
+#Stepwise
+#functional but takes a super long time to run; commented out for convenience
+#park5_metrics_s <- stepwise_select(dataset, 2)
+#r2_plot(park5_metrics_s, "CubicXR Stepwise")
+#aic_plot(park5_metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[2]), colnames(dataset[-2]))
+response <- dataset[2]
+#Ridge
+ridge(full_formula, dataset, 2)
+#Lasso
+lasso(full_formula, dataset, 2)
+```
+
+
+###Dataset 5: Absenteeism at Work
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/00445/
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Absenteeism+at+work
+
+Step 1: Data Preprocessing
+```{r}
+absent <- data.frame(read.csv("~/Desktop/CSCI4360/Absenteeism_at_work.csv", sep = ";", header = TRUE))
+
+#remove non-predictors and colinear columns
+absent <- absent[-c(12,15,16,18,19)]
+
+#goal: estimate absenteeism
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- absent
+
+#Forward
+abs1_metrics_f <- forward_select(dataset, 16)
+r2_plot(abs1_metrics_f, "Mult Linear Forward")
+aic_plot(abs1_metrics_f, "Mult Linear Forward")
+
+#Backward
+abs1_metrics_b <- backward_elim_b(dataset, 16)
+r2_plot(abs1_metrics_b, "Mult Linear Backward")
+aic_plot(abs1_metrics_b, "Mult Linear Backward")
+
+#Stepwise
+abs1_metrics_s <- stepwise_select(dataset, 16)
+r2_plot(abs1_metrics_s, "Mult Linear Stepwise")
+aic_plot(abs1_metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[16]), colnames(dataset[-16]))
+response <- dataset[16]
+#Ridge
+ridge(full_formula, dataset, 16)
+#Lasso
+lasso(full_formula, dataset, 16)
+```
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(absent, 16)
+
+#Forward
+abs2_metrics_f <- forward_select(dataset, 16)
+r2_plot(abs2_metrics_f, "Quadratic Forward")
+aic_plot(abs2_metrics_f, "Quadratic Forward")
+
+#Backward
+abs2_metrics_b <- backward_elim_b(dataset, 16)
+r2_plot(abs2_metrics_b, "Quadratic Backward")
+aic_plot(abs2_metrics_b, "Quadratic Backward")
+
+#Stepwise
+abs2_metrics_s <- stepwise_select(dataset, 16)
+r2_plot(abs2_metrics_s, "Quadratic Stepwise")
+aic_plot(abs2_metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[16]), colnames(dataset[-16]))
+response <- dataset[16]
+#Ridge
+ridge(full_formula, dataset, 16)
+#Lasso
+lasso(full_formula, dataset, 16)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(absent, 16)[,-c(28:50, 91:94, 96:98)]
+
+#Forward
+abs3_metrics_f <- forward_select(dataset, 16)
+r2_plot(abs3_metrics_f, "QuadXR Forward")
+aic_plot(abs3_metrics_f, "QuadXR Forward")
+
+#Backward
+abs3_metrics_b <- backward_elim(dataset, 16)
+r2_plot(abs3_metrics_b, "QuadXR Backward")
+aic_plot(abs3_metrics_b, "QuadXR Backward")
+
+#Stepwise
+abs3_metrics_s <- stepwise_select(dataset, 16)
+r2_plot(abs3_metrics_s, "QuadXR Stepwise")
+aic_plot(abs3_metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[16]), colnames(dataset[-16]))
+response <- dataset[16]
+#Ridge
+ridge(full_formula, dataset, 16)
+#Lasso
+lasso(full_formula, dataset, 16)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(absent, 16)
+
+#Forward
+abs4_metrics_f <- forward_select(dataset, 16)
+r2_plot(abs4_metrics_f, "Cubic Forward")
+aic_plot(abs4_metrics_f, "Cubic Forward")
+
+#Backward
+abs4_metrics_b <- backward_elim(dataset, 16)
+r2_plot(abs4_metrics_b, "Cubic Backward")
+aic_plot(abs4_metrics_b, "Cubic Backward")
+
+#Stepwise
+abs4_metrics_s <- stepwise_select(dataset, 16)
+r2_plot(abs4_metrics_s, "Cubic Stepwise")
+aic_plot(abs4_metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[16]), colnames(dataset[-16]))
+response <- dataset[16]
+#Ridge
+ridge(full_formula, dataset, 16)
+#Lasso
+lasso(full_formula, dataset, 16)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(absent, 16)[,-c(28:50)]
+
+#the following code is functional but takes a long time to run
+
+#Forward
+#abs5_metrics_f <- forward_select(dataset, 16)
+#r2_plot(abs5_metrics_f, "CubicXR Forward")
+#aic_plot(abs5_metrics_f, "CubicXR Forward")
+
+#Backward
+#abs5_metrics_b <- backward_elim(dataset, 16)
+#r2_plot(abs5_metrics_b, "CubicXR Backward")
+#aic_plot(abs5_metrics_b, "CubicXR Backward")
+
+#Stepwise
+#abs5_metrics_s <- stepwise_select(dataset, 16)
+#r2_plot(abs5_metrics_s, "CubicXR Stepwise")
+#aic_plot(abs5_metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[16]), colnames(dataset[-16]))
+response <- dataset[16]
+#Ridge
+ridge(full_formula, dataset, 16)
+#Lasso
+lasso(full_formula, dataset, 16)
+```
+
+
+###Dataset 6: Obesity
+
+Access the dataset: https://archive.ics.uci.edu/ml/machine-learning-databases/00544/
+About the dataset: https://archive.ics.uci.edu/ml/datasets/Estimation+of+obesity+levels+based+on+eating+habits+and+physical+condition+ 
+
+Step 1: Data Preprocessing
+```{r}
+obesity <- data.frame(read.csv("~/Desktop/CSCI4360/ObesityDataSet_raw_and_data_sinthetic.csv", header = TRUE))
+
+#there are not missing values in this dataset
+#there are 2111 observations recorded
+len <- length(obesity$Weight)
+
+#goal: estimate level of obesity based on weight and physical condition
+#obes_x$Gender <- as.factor(obes_x$Gender)
+#response data
+#calculate BMI from weight and height
+BMI <- obesity$Weight / (obesity$Height*obesity$Height) #BMI = kg/m^2
+#explanatory data (exclude height, weight, NObeyesdad)
+obesity <- obesity[-c(3,4,17)] 
+obesity <- cbind(obesity, BMI)
+
+obesity_cat <- obesity[c(1,3,4,7,8,10,13,14)]
+obesity_quant <- obesity[-c(1,3,4,7,8,10,13,14)]
+
+```
+
+Step 2: Multiple Linear Regression
+```{r}
+dataset <- obesity
+
+#Forward
+metrics_f <- forward_select(dataset, 15)
+r2_plot(metrics_f, "Mult Linear Forward")
+aic_plot(metrics_f, "Mult Linear Forward")
+
+#Backward
+metrics_b <- backward_elim(dataset, 15)
+r2_plot(metrics_b, "Mult Linear Backward")
+aic_plot(metrics_b, "Mult Linear Backward")
+
+#Stepwise
+metrics_s <- stepwise_select(dataset, 15)
+r2_plot(metrics_s, "Mult Linear Stepwise")
+aic_plot(metrics_s, "Mult Linear Stepwise")
+
+full_formula <- make_formula(colnames(dataset[15]), colnames(dataset[-15]))
+response <- dataset[15]
+#Ridge
+ridge(full_formula, dataset, 15)
+#Lasso
+lasso(full_formula, dataset, 15)
+```
+
+Step 3: Quadratic Regression
+```{r}
+dataset <- quadratic_data(obesity_quant, 7)
+
+#Forward
+metrics_f <- forward_select(dataset, 7)
+r2_plot(metrics_f, "Quadratic Forward")
+aic_plot(metrics_f, "Quadratic Forward")
+
+#Backward
+metrics_b <- backward_elim(dataset, 7)
+r2_plot(metrics_b, "Quadratic Backward")
+aic_plot(metrics_b, "Quadratic Backward")
+
+#Stepwise
+metrics_s <- stepwise_select(dataset, 7)
+r2_plot(metrics_s, "Quadratic Stepwise")
+aic_plot(metrics_s, "Quadratic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[7]), colnames(dataset[-7]))
+response <- dataset[7]
+#Ridge
+ridge(full_formula, dataset, 7)
+#Lasso
+lasso(full_formula, dataset, 7)
+```
+
+Step 4: Quadratic with Interaction Regression
+```{r}
+dataset <- quadXR_data(obesity_quant, 7)
+
+#Forward
+metrics_f <- forward_select(dataset, 7)
+r2_plot(metrics_f, "QuadXR Forward")
+aic_plot(metrics_f, "QuadXR Forward")
+
+#Backward
+metrics_b <- backward_elim_b(dataset, 7)
+r2_plot(metrics_b, "QuadXR Backward")
+aic_plot(metrics_b, "QuadXR Backward")
+
+#Stepwise
+metrics_s <- stepwise_select(dataset, 7)
+r2_plot(metrics_s, "QuadXR Stepwise")
+aic_plot(metrics_s, "QuadXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[7]), colnames(dataset[-7]))
+response <- dataset[7]
+#Ridge
+ridge(full_formula, dataset, 7)
+#Lasso
+lasso(full_formula, dataset, 7)
+```
+
+Step 5: Cubic Regression
+```{r}
+dataset <- cubic_data(obesity_quant, 7)
+
+#Forward
+metrics_f <- forward_select(dataset, 7)
+r2_plot(metrics_f, "Cubic Forward")
+aic_plot(metrics_f, "Cubic Forward")
+
+#Backward
+metrics_b <- backward_elim_b(dataset, 7)
+r2_plot(metrics_b, "Cubic Backward")
+aic_plot(metrics_b, "Cubic Backward")
+
+#Stepwise
+metrics_s <- stepwise_select(dataset, 7)
+r2_plot(metrics_s, "Cubic Stepwise")
+aic_plot(metrics_s, "Cubic Stepwise")
+
+full_formula <- make_formula(colnames(dataset[7]), colnames(dataset[-7]))
+response <- dataset[7]
+#Ridge
+ridge(full_formula, dataset, 7)
+#Lasso
+lasso(full_formula, dataset, 7)
+```
+
+Step 6: Cubic with Interaction Regression
+```{r}
+dataset <- cubicXR_data(obesity_quant, 7)[,-c(21:53)] #not full model
+
+#Forward
+metrics_f <- forward_select(dataset, 7)
+r2_plot(metrics_f, "CubicXR Forward")
+aic_plot(metrics_f, "CubicXR Forward")
+
+#Backward
+metrics_b <- backward_elim_b(dataset, 7)
+r2_plot(metrics_b, "CubicXR Backward")
+aic_plot(metrics_b, "CubicXR Backward")
+
+#Stepwise
+metrics_s <- stepwise_select(dataset, 7)
+r2_plot(metrics_s, "CubicXR Stepwise")
+aic_plot(metrics_s, "CubicXR Stepwise")
+
+full_formula <- make_formula(colnames(dataset[7]), colnames(dataset[-7]))
+response <- dataset[7]
+#Ridge
+ridge(full_formula, dataset, 7)
+#Lasso
+lasso(full_formula, dataset, 7)
+```
+
